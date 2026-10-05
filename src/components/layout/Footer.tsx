@@ -1,0 +1,2 @@
+import { ArrowUpRight } from 'lucide-react';
+export default function Footer() { return <footer className="footer"><span>FinnTrack <span className="footer-dot">·</span> A clearer view of your journey.</span><a href="https://www.digitraffic.fi/en/railway-traffic/" target="_blank" rel="noreferrer">Data by Fintraffic / Digitraffic <ArrowUpRight size={13} /></a><span>All times in Finland</span></footer>; }

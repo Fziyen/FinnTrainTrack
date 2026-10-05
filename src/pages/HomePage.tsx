@@ -1,0 +1,53 @@
+import { useCallback, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Activity, ArrowRight, ArrowUpRight, Bookmark, CheckCircle2, Clock3, MapPin, RefreshCw, Search, TrainFront } from 'lucide-react';
+import SearchBox from '../components/ui/SearchBox';
+import TrainList from '../components/trains/TrainList';
+import MapPanel from '../components/ui/MapPanel';
+import { ErrorBanner, Status } from '../components/ui/States';
+import { fetchRunningTrains, fetchStations, fetchLatestTrainLocations } from '../services/api';
+import type { Train, Station, TrainLocation } from '../types/apiTypes';
+import { useResource } from '../hooks/useResource';
+import { formatTime, stationName, trainLabel, trainDelay, trainStatus } from '../utils/formatters';
+import { useFavoriteStore } from '../stores/favoriteStore';
+import { ServiceFilter } from '../components/ui/ServiceFilter';
+import { nextArrival, serviceGroup, serviceLabels, type ServiceGroup } from '../utils/trainServices';
+const initial = { trains: [] as Train[], stations: [] as Station[], locations: [] as TrainLocation[], warnings: [] as string[] };
+export default function HomePage({ mapOnly = false }: { mapOnly?: boolean }) {
+  const [category, setCategory] = useState('All trains'); const [query, setQuery] = useState(''); const [delayedOnly, setDelayedOnly] = useState(false);
+  const [service, setService] = useState<ServiceGroup>('all'); const [stationCode, setStationCode] = useState('');
+  const favorites = useFavoriteStore(state => state.favoriteStations);
+  const fetcher = useCallback(async (signal: AbortSignal) => {
+    const [trains, stations, locations] = await Promise.allSettled([fetchRunningTrains(signal), fetchStations(true), fetchLatestTrainLocations(signal)]);
+    if (trains.status === 'rejected') throw trains.reason;
+    return { trains: trains.value.sort((a, b) => a.trainNumber - b.trainNumber), stations: stations.status === 'fulfilled' ? stations.value : [], locations: locations.status === 'fulfilled' ? locations.value : [], warnings: [stations.status === 'rejected' ? 'Station names are unavailable. Station codes are shown instead.' : '', locations.status === 'rejected' ? 'GPS positions are unavailable. Timetables are still available.' : ''].filter(Boolean) };
+  }, []);
+  const { data, loading, refreshing, error, updatedAt, refresh } = useResource(fetcher, initial, 30000);
+  const filtered = useMemo(() => data.trains.filter(train => {
+    const categoryMatches = category === 'All trains' || train.trainCategory === category;
+    const text = `${trainLabel(train)} ${train.timeTableRows.map(row => stationName(row.stationShortCode, data.stations)).join(' ')}`.toLowerCase();
+    return (service === 'all' || serviceGroup(train) === service) && (!stationCode || !!nextArrival(train, stationCode)) && categoryMatches && (!delayedOnly || trainDelay(train) > 0) && text.includes(query.toLowerCase().trim());
+  }), [data, category, delayedOnly, query, service, stationCode]);
+  const ids = new Set(filtered.map(train => `${train.trainNumber}-${train.departureDate}`));
+  const positions = data.locations.filter(location => ids.has(`${location.trainNumber}-${location.departureDate}`));
+  const groupTrains = data.trains.filter(train => service === 'all' || serviceGroup(train) === service);
+  const reported = groupTrains.filter(train => trainStatus(train).tone !== 'neutral');
+  const onTime = reported.filter(train => trainDelay(train) <= 0).length;
+  const stats = [
+    { label: 'Trains in motion', value: groupTrains.length, note: `${serviceLabels[service]} across Finland`, icon: TrainFront, color: 'green' },
+    { label: 'On time', value: reported.length ? `${Math.round(onTime / reported.length * 100)}%` : '—', note: 'Of services with timing updates', icon: CheckCircle2, color: 'green' },
+    { label: 'Running late', value: groupTrains.filter(train => trainDelay(train) > 0).length, note: 'Services with a reported delay', icon: Clock3, color: 'amber' },
+    { label: 'Passenger stations', value: data.stations.filter(station => station.passengerTraffic).length || '—', note: 'Your next journey starts here', icon: MapPin, color: 'blue' },
+  ];
+  const quickStops = favorites.length ? favorites.slice(0, 3) : ['HKI', 'TPE', 'TKU'];
+  const popular: Record<string, string> = { HKI: 'Helsinki', TPE: 'Tampere', TKU: 'Turku' };
+  return <div className="page-enter"><section className="overview-hero"><div><div className="eyebrow"><span className="live-dot" /> THE FINNISH RAIL NETWORK</div><h1>{mapOnly ? 'The network. In motion.' : <>Every journey,<br className="hero-break" /> in view<span className="heading-dot">.</span></>}</h1><p>From your daily commute to your next adventure.<br className="desktop-break" /> A little clarity for every kilometre.</p></div><div className="hero-search"><SearchBox /><div className="search-hint"><span>Try <Link to="/station/HKI">Helsinki</Link>, <Link to="/station/TPE">Tampere</Link> or a train number</span><span className="tiny-label">EXPLORE. FOLLOW. ARRIVE.</span></div></div></section>
+    {error && <ErrorBanner message={`${updatedAt ? 'Updates interrupted. Showing the last available data. ' : ''}${error}`} retry={refresh} />}{data.warnings.map(warning => <ErrorBanner key={warning} message={warning} retry={refresh} />)}
+    <section className="network-controls" aria-label="Filter the rail network"><ServiceFilter value={service} onChange={value => { setService(value); setCategory('All trains'); }} services={data.trains} /><label className="station-eta-select"><span>Arrivals at</span><select aria-label="Countdown station" value={stationCode} onChange={event => setStationCode(event.target.value)}><option value="">Next station on each route</option>{data.stations.map(station => <option value={station.stationShortCode} key={station.stationShortCode}>{station.stationName} ({station.stationShortCode})</option>)}</select></label><p>HSL is shown by commuter line; VR also operates those trains. Freight & work trains are not passenger services.</p></section>
+    {!mapOnly && <section className="stats-grid" aria-label="Network at a glance">{stats.map(({ label, value, note, icon: Icon, color }) => <article className="stat-card" key={label}><div className="stat-top"><span>{label}</span><span className={`stat-icon ${color}`}><Icon size={18} /></span></div><div className="stat-value">{loading ? <span className="skeleton stat-skeleton" /> : error && !updatedAt ? '—' : value}</div><p>{note}</p></article>)}</section>}
+    <section className={`network-grid ${mapOnly ? 'map-page' : ''}`}><article className="panel map-card"><div className="panel-heading"><div><div className="eyebrow">A LIVE PERSPECTIVE</div><h2>Finland on the move</h2></div><Link to={mapOnly ? '/' : '/map'} className="text-link">{mapOnly ? 'Back to overview' : 'Explore map'} <ArrowUpRight size={16} /></Link></div><div className="map-wrap"><MapPanel stationCode={stationCode} services={filtered} trainLocations={positions} stations={data.stations} height={mapOnly ? '610px' : '380px'} />{!loading && !positions.length && <div className="map-notice">{data.locations.length ? 'No GPS positions match these filters.' : 'No GPS positions available right now.'}</div>}</div><div className="map-footer"><div><span className="legend-train vr" />VR <span className="legend-train hsl" />HSL <span className="legend-train industrial" />Freight & work <span className="legend-station" />Station</div><span>{positions.length} GPS positions <span className="footer-dot">·</span> Click a marker to explore</span></div></article>
+    {!mapOnly && <aside className="overview-aside"><article className="panel quick-stations"><div className="panel-heading"><div><div className="eyebrow">ONE STOP AWAY</div><h2>{favorites.length ? 'Your saved stops' : 'Popular stations'}</h2></div><MapPin size={19} /></div>{quickStops.map((code, index) => <Link className="quick-station" key={code} to={`/station/${code}`}><span className="stop-index">0{index + 1}</span><span><strong>{stationName(code, data.stations) === code ? popular[code] ?? code : stationName(code, data.stations)}</strong><small>Arrivals & departures</small></span><ArrowUpRight size={18} /></Link>)}<Link className="all-stations" to="/stations">Discover all stations <ArrowRight size={16} /></Link></article><article className="save-prompt"><div className="save-prompt-top"><Bookmark size={21} /><span>MAKE IT YOURS</span></div><h2>Your journey.<br />One tap away.</h2><p>Save your regular trains and stations. Find them here, whenever you need them.</p><Link to="/favorites">Find your saved journeys <ArrowUpRight size={16} /></Link><div className="rail-decoration" aria-hidden="true"><i /><i /><i /><i /><i /><i /></div></article></aside>}</section>
+    <section className="panel live-services"><div className="panel-heading"><div><div className="eyebrow">DEPARTURES, DESTINATIONS & EVERYTHING BETWEEN</div><h2>Live train services <span className="count-pill">{loading ? '…' : data.trains.length}</span></h2></div><div className="refresh-control"><span>{updatedAt ? `Updated ${formatTime(updatedAt)}` : loading ? 'Connecting…' : 'Awaiting data'}</span><button className="button small" disabled={refreshing} onClick={refresh}><RefreshCw size={14} className={refreshing ? 'spin' : ''} />Refresh</button></div></div><div className="table-toolbar"><div className="tabs" aria-label="Train category">{['All trains', 'Long-distance', 'Commuter'].map(tab => <button key={tab} className={category === tab ? 'active' : ''} aria-pressed={category === tab} onClick={() => setCategory(tab)}>{tab}</button>)}</div><div className="table-filters"><label className="filter-search"><Search size={15} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Filter train or station" aria-label="Filter live trains" /></label><label className="delay-filter"><input type="checkbox" checked={delayedOnly} onChange={event => setDelayedOnly(event.target.checked)} /><Activity size={14} />Delayed</label></div></div><TrainList key={`${service}-${category}-${stationCode}-${query}-${delayedOnly}`} stationCode={stationCode} trains={filtered} stations={data.stations} loading={loading} emptyMessage={error && !updatedAt ? 'Live services unavailable' : 'No matching live services'} /></section>
+    <div className="data-note"><Status label={error ? 'Updates interrupted' : updatedAt ? 'Updates every 30 seconds' : 'Connecting to live data'} tone={error ? 'amber' : updatedAt ? 'green' : 'neutral'} /><span>VR, HSL, freight & work trains. GPS coverage varies. Countdown estimates update every 15 seconds.</span></div>
+  </div>;
+}
